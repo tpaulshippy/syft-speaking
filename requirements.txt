@@ -1,4 +1,5 @@
 pipecat-ai
+pipecat-ai[webrtc]
 fastapi
 uvicorn
 requests
@@ -6,3 +7,4 @@ ollama
 sqlalchemy
 aiohttp
 python-dotenv
+lightning-whisper-mlx
