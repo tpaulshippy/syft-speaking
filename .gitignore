@@ -1,0 +1,14 @@
+# Virtual Environment
+venv/
+*.pyc
+__pycache__/
+
+# Environment variables
+.env
+
+# Database
+*.db
+*.sqlite3
+
+# OS-specific
+.DS_Store

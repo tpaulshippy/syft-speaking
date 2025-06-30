@@ -1,0 +1,8 @@
+pipecat-ai
+fastapi
+uvicorn
+requests
+ollama
+sqlalchemy
+aiohttp
+python-dotenv
