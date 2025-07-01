@@ -78,4 +78,4 @@ class LocalWhisperSTT(FrameProcessor):
             await self.push_frame(frame, direction)
 
 # This processor is meant to be used within a Pipecat pipeline,
-# so a direct test here is complex. The test will be part of the main application.
+# so a direct test here is complex. The test will be part of the main application.python test_whisper_mlx.py

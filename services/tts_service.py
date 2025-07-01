@@ -1,102 +1,168 @@
-import aiohttp
-import asyncio
-import logging
-import os
-from dotenv import load_dotenv
+#
+# Copyright (c) 2024–2025, Daily
+#
+# SPDX-License-Identifier: BSD 2-Clause License
+#
 
-# Load environment variables from .env file
-load_dotenv()
+import base64
+import json
+import uuid
+import numpy as np
+from typing import AsyncGenerator, List, Optional, Union
 
-logging.basicConfig(level=logging.INFO)
+from loguru import logger
+from pydantic import BaseModel
 
-class KokoroTTSClient:
-    """
-    A client for an OpenAI-compatible TTS server like Kokoro-FastAPI.
-    It sends text to the server and receives audio data in response.
-    """
+from pipecat.frames.frames import (
+    BotStoppedSpeakingFrame,
+    CancelFrame,
+    EndFrame,
+    ErrorFrame,
+    Frame,
+    LLMFullResponseEndFrame,
+    StartFrame,
+    StartInterruptionFrame,
+    TTSAudioRawFrame,
+    TTSSpeakFrame,
+    TTSStartedFrame,
+    TTSStoppedFrame,
+)
+from pipecat.processors.frame_processor import FrameDirection
+from pipecat.services.ai_services import AudioContextWordTTSService, TTSService
+from pipecat.services.websocket_service import WebsocketService
+from pipecat.transcriptions.language import Language
 
-    def __init__(self, base_url: str = None, model: str = "tts-1"):
-        """
-        Initializes the KokoroTTSClient.
+# See .env.example for Cartesia configuration needed
+try:
+    import websockets
+except ModuleNotFoundError as e:
+    logger.error(f"Exception: {e}")
+    logger.error(
+        "In order to use Cartesia, you need to `pip install pipecat-ai[cartesia]`. Also, set `CARTESIA_API_KEY` environment variable."
+    )
+    raise Exception(f"Missing module: {e}")
 
-        Args:
-            base_url (str, optional): The base URL of the TTS server.
-                                      Defaults to KOKORO_TTS_URL or 'http://localhost:8000'.
-            model (str, optional): The TTS model to use. Defaults to 'tts-1'.
-        """
-        self._base_url = base_url or os.getenv("KOKORO_TTS_URL", "http://localhost:8000")
-        self._tts_url = f"{self._base_url}/v1/audio/speech"
-        self._model = model
-        logging.info(f"KokoroTTSClient initialized for server URL: {self._tts_url}")
+try:
+    from kokoro_onnx import Kokoro
+except ModuleNotFoundError as e:
+    logger.error(f"Exception: {e}")
+    logger.error(
+        "In order to use Kokoro, you need to `pip install kokoro-onnx`. Also, download the model files from the Kokoro repository."
+    )
+    raise Exception(f"Missing module: {e}")
 
-    async def generate_audio(self, text: str) -> bytes:
-        """
-        Generates audio from the given text by making a POST request to the TTS server.
 
-        Args:
-            text (str): The text to be converted to speech.
-
-        Returns:
-            bytes: The raw audio data (e.g., WAV or MP3 file content).
-                   Returns an empty bytes object if an error occurs.
-        """
-        if not text:
-            return b""
-
-        payload = {
-            "input": text,
-            "model": self._model,
-            # You can add other parameters like 'voice' if your server supports them
-            # "voice": "alloy"
-        }
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(self._tts_url, json=payload) as response:
-                    response.raise_for_status()
-                    audio_data = await response.read()
-                    logging.info(f"Successfully received {len(audio_data)} bytes of audio data.")
-                    return audio_data
-        except aiohttp.ClientError as e:
-            logging.error(f"An error occurred while requesting TTS audio: {e}")
-            return b""
-        except Exception as e:
-            logging.error(f"An unexpected error occurred in generate_audio: {e}")
-            return b""
-
-# Example usage for testing the service directly
-async def main():
-    """Main function to test the KokoroTTSClient."""
-    print("Testing KokoroTTSClient...")
+def language_to_kokoro_language(language: Language) -> Optional[str]:
+    """Convert pipecat Language to Kokoro language code."""
+    BASE_LANGUAGES = {
+        Language.EN: "en-us",
+        # Add more language mappings as supported by Kokoro
+    }
     
-    client = KokoroTTSClient()
+    result = BASE_LANGUAGES.get(language)
+    
+    # If not found in base languages, try to find the base language from a variant
+    if not result:
+        lang_str = str(language.value)
+        base_code = lang_str.split("-")[0].lower()
+        # Look up the base code in our supported languages
+        result = f"{base_code}-us" if base_code in ["en"] else None
+        
+    return result
 
-    text_to_speak = "Hello, this is a test of the OpenAI-compatible TTS client."
-    print(f"Requesting audio for text: '{text_to_speak}' from {client._tts_url}")
 
-    try:
-        audio_bytes = await client.generate_audio(text_to_speak)
-        if audio_bytes:
-            # Save the audio to a file to verify it's working.
-            # The format might be mp3 or wav depending on the server's default.
-            output_filename = "tts_test_output.mp3"
-            with open(output_filename, "wb") as f:
-                f.write(audio_bytes)
-            print(f"Successfully generated audio and saved it to '{output_filename}'")
-            print("You can play this file to check the output.")
-        else:
-            print("\n[Error] Failed to generate audio.")
-            print("Please check the console for error messages from the client.")
+class KokoroTTSService(TTSService):
+    """Text-to-Speech service using Kokoro for on-device TTS.
+    
+    This service uses Kokoro to generate speech without requiring external API connections.
+    """
+    
+    class InputParams(BaseModel):
+        """Configuration parameters for Kokoro TTS service."""
+        language: Optional[Language] = Language.EN
+        speed: Optional[float] = 1.0
 
-    except aiohttp.client_exceptions.ClientConnectorError as e:
-        print(f"\n[Connection Error] Could not connect to the server at {client._tts_url}.")
-        print("Please ensure the server is running and the URL is correct.")
-        logging.debug(e)
-    except Exception as e:
-        print(f"\nAn unexpected error occurred during the test: {e}")
+    def __init__(
+        self,
+        *,
+        model_path: str,
+        voices_path: str,
+        voice_id: str = "af_sarah",
+        sample_rate: Optional[int] = None,
+        params: InputParams = InputParams(),
+        **kwargs,
+    ):
+        """Initialize Kokoro TTS service.
+        
+        Args:
+            model_path: Path to the Kokoro ONNX model file
+            voices_path: Path to the Kokoro voices file
+            voice_id: ID of the voice to use
+            sample_rate: Output audio sample rate
+            params: Additional configuration parameters
+        """
+        super().__init__(sample_rate=sample_rate, **kwargs)
+        logger.info(f"Initializing Kokoro TTS service with model_path: {model_path} and voices_path: {voices_path}")
+        self._kokoro = Kokoro(model_path, voices_path)
+        logger.info(f"Kokoro initialized")
+        self._settings = {
+            "language": self.language_to_service_language(params.language)
+            if params.language
+            else "en-us",
+            "speed": params.speed,
+        }
+        self.set_voice(voice_id)  # Presumably this sets self._voice_id
+        
+        logger.info("Kokoro TTS service initialized")
 
-if __name__ == "__main__":
-    # To run this test, ensure your TTS server is running.
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\nTest interrupted by user.")
+    def can_generate_metrics(self) -> bool:
+        return True
+
+    def language_to_service_language(self, language: Language) -> Optional[str]:
+        """Convert pipecat language to Kokoro language code."""
+        return language_to_kokoro_language(language)
+
+    async def run_tts(self, text: str) -> AsyncGenerator[Frame, None]:
+        """Generate speech from text using Kokoro in a streaming fashion.
+        
+        Args:
+            text: The text to convert to speech
+            
+        Yields:
+            Frames containing audio data and status information.
+        """
+        logger.debug(f"Generating TTS: [{text}]")
+        try:
+            await self.start_ttfb_metrics()
+            yield TTSStartedFrame()
+            
+            # Use Kokoro's streaming mode. The create_stream method is assumed to return
+            # an async generator that yields (samples, sample_rate) tuples, where samples is a numpy array.
+            logger.info(f"Creating stream")
+            stream = self._kokoro.create_stream(
+                text,
+                voice=self._voice_id,
+                speed=self._settings["speed"],
+                lang=self._settings["language"],
+            )
+
+            
+            await self.start_tts_usage_metrics(text)
+            started = False
+            async for samples, sample_rate in stream:
+                if not started:
+                    started = True
+                    logger.info(f"Started streaming")
+                # Convert the float32 samples (assumed in the range [-1, 1]) to int16 PCM format
+                samples_int16 = (samples * 32767).astype(np.int16)
+                yield TTSAudioRawFrame(
+                    audio=samples_int16.tobytes(),
+                    sample_rate=sample_rate,
+                    num_channels=1,
+                )
+            
+            yield TTSStoppedFrame()
+            
+        except Exception as e:
+            logger.error(f"{self} exception: {e}")
+            yield ErrorFrame(f"Error generating audio: {str(e)}")

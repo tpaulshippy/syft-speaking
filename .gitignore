@@ -17,3 +17,6 @@ __pycache__/
 web/node_modules
 web/.vite
 
+mlx_models/
+kokoro/
+
