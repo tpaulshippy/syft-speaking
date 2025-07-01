@@ -12,3 +12,8 @@ __pycache__/
 
 # OS-specific
 .DS_Store
+
+# Web
+web/node_modules
+web/.vite
+
