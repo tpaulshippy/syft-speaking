@@ -6,17 +6,7 @@ __pycache__/
 # Environment variables
 .env
 
-# Database
-*.db
-*.sqlite3
-
 # OS-specific
 .DS_Store
-
-# Web
-web/node_modules
-web/.vite
-
-mlx_models/
 kokoro/
 

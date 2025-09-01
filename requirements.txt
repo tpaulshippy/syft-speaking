@@ -1,15 +1,2 @@
-
-pipecat-ai[webrtc]
-pipecat-ai[ollama]
-fastapi
-uvicorn
-requests
-ollama
-sqlalchemy
-aiohttp
-python-dotenv
-lightning-whisper-mlx
-pyaudio
+pipecat-ai[ollama,silero,runner,webrtc,mlx-whisper]>=0.0.82
 kokoro-onnx==0.4.9
-
--e ../pipecat
