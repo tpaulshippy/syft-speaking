@@ -11,6 +11,7 @@ the conversation flow.
 """
 
 import os
+import sys
 import time
 
 from dotenv import load_dotenv
@@ -45,6 +46,7 @@ from pipecat.transports.network.small_webrtc import SmallWebRTCTransport
 from pipecat.services.whisper.stt import WhisperSTTService
 from pipecat.services.whisper.stt import MLXModel, WhisperSTTServiceMLX
 from tts_service import KokoroTTSService
+import bot_config
 
 load_dotenv(override=True)
 
@@ -52,13 +54,20 @@ KOKORO_MODEL_PATH = os.getenv("KOKORO_MODEL_PATH", "kokoro/kokoro-v1.0.onnx")
 KOKORO_VOICES_PATH = os.getenv("KOKORO_VOICES_PATH", "kokoro/voices-v1.0.bin")
 KOKORO_VOICE_ID = os.getenv("KOKORO_VOICE_ID", "af_sarah")
 
-async def run_bot(transport: BaseTransport):
+# Global variable to store the selected bot name (initialized in main)
+_selected_bot_name = None
+
+async def run_bot(transport: BaseTransport, system_prompt: str = None):
     """Main bot execution function.
 
     Sets up and runs the bot pipeline including:
     - Speech-to-text and text-to-speech services
     - Language model integration
     - RTVI event handling
+    
+    Args:
+        transport: The transport layer for communication
+        system_prompt: Custom system prompt to use (optional)
     """
 
 
@@ -75,10 +84,14 @@ async def run_bot(transport: BaseTransport):
         base_url="http://localhost:11434/v1",  # Default Ollama endpoint
     )
 
+    # Use provided system prompt or default
+    if system_prompt is None:
+        system_prompt = bot_config.get_system_prompt(None)
+    
     messages = [
         {
             "role": "system",
-            "content": "You are Chatbot, a friendly, helpful robot. Your goal is to demonstrate your capabilities in a succinct way. Your output will be converted to audio so don't include special characters in your answers. Respond to what the user said in a creative and helpful way, but keep your responses brief. Start by introducing yourself.",
+            "content": system_prompt,
         },
     ]
 
@@ -146,10 +159,19 @@ async def bot(runner_args: RunnerArguments):
         webrtc_connection=runner_args.webrtc_connection,
     )
 
-    await run_bot(transport)
+    # Get system prompt based on selected bot
+    system_prompt = bot_config.get_system_prompt(_selected_bot_name)
+    
+    await run_bot(transport, system_prompt)
 
 
 if __name__ == "__main__":
+    # Parse bot configuration and handle bot-specific arguments
+    _selected_bot_name, remaining_args = bot_config.parse_bot_args()
+    
+    # Clean up sys.argv for pipecat runner
+    sys.argv = [sys.argv[0]] + remaining_args
+
     from pipecat.runner.run import main
 
     main()
